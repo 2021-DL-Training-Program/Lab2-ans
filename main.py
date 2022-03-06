@@ -10,18 +10,19 @@ import matplotlib.pyplot as plt
 plt.switch_backend('agg')
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from dataloader import load
-from transfer import index2word, word2index
+from translate import index2word, word2index
 from My_GRU import GRU, GRU2
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Max length of word
 MAX_LENGTH = 22
 
 #----------Hyper Parameters----------#
-hidden_size = 512
-#The number of vocabulary
+# The number of vocabulary ('SOS', 'EOS', 'PAD', 'a', 'b', ..., 'z')
 vocab_size = 29
 
+hidden_size = 512
 batch_size = 32
 teacher_forcing_ratio = 0.5
 n_iters = 75000
@@ -29,14 +30,16 @@ print_every = 100
 plot_every = 100
 learning_rate = 0.01
 
-#hyperparameter for learning rate scheduler
+# hyperparameter for learning rate scheduler
 milestones = [30000, 50000, 70000]
 gamma = 0.5
 
+# build index to word table
 index_table = {0:'SOS', 1:'EOS', 2:'PAD'}
 for i in range(97, 97+26):
     index_table[i - 94] = chr(i)
-    
+
+# build word to index table
 word_table = {}
 for i in range(len(index_table)):
     word_table[index_table[i]] = i
@@ -92,17 +95,15 @@ def train(input_list, target_list, encoder, decoder, encoder_optimizer, decoder_
     
     loss = 0
     
+    # initialize the hidden state
     encoder_hidden = encoder.initHidden(batch_size)
         
     input_tensor = torch.tensor(input_list, dtype=torch.long, device=device)
     target_tensor = torch.tensor(target_list, dtype=torch.long, device=device)
-        
-    input_length = MAX_LENGTH
-    target_length = MAX_LENGTH
 
     #----------sequence to sequence part for encoder----------#
-    for di in range(input_length):
-        encoder_output, encoder_hidden = encoder(input_tensor.T[di], encoder_hidden, batch_size)
+    for di in range(MAX_LENGTH):
+        _, encoder_hidden = encoder(input_tensor.T[di], encoder_hidden, batch_size)
         
     decoder_input = torch.tensor([word_table['SOS'] for i in range(batch_size)], device=device)
     decoder_hidden = encoder_hidden
@@ -111,14 +112,14 @@ def train(input_list, target_list, encoder, decoder, encoder_optimizer, decoder_
     #----------sequence to sequence part for decoder----------#
     if use_teacher_forcing:
         # Teacher forcing: Feed the target as the next input
-        for di in range(1, target_length):
+        for di in range(1, MAX_LENGTH):
             decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden, batch_size)
             loss += criterion(decoder_output, target_tensor.T[di].view(-1))
             decoder_input = target_tensor.T[di].view(1, -1).detach()  # Teacher forcing
            
     else:
         # Without teacher forcing: use its own predictions as the next input
-        for di in range(1, target_length):
+        for di in range(1, MAX_LENGTH):
             decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden, batch_size)
             loss += criterion(decoder_output, target_tensor.T[di].view(-1))
             topv, topi = decoder_output.topk(1)
@@ -130,7 +131,7 @@ def train(input_list, target_list, encoder, decoder, encoder_optimizer, decoder_
     encoder_optimizer.step()
     decoder_optimizer.step()
     
-    return loss.item() / target_length
+    return loss.item() / MAX_LENGTH
 
 
 def asMinutes(s):
@@ -157,19 +158,28 @@ def trainIters(encoder, decoder, n_iters=75000, print_every=1000, plot_every=100
     
     best_loss = 100000
     
+    # optimizer and learning rate scheduler
     encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
     encoder_scheduler = torch.optim.lr_scheduler.MultiStepLR(encoder_optimizer, milestones=milestones, gamma=gamma)
     
     decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
     decoder_scheduler = torch.optim.lr_scheduler.MultiStepLR(decoder_optimizer, milestones=milestones, gamma=gamma)
     
+    # load data
     pairs = load('train.json')
     test_pairs = load('test.json')
+    
+    # loss function
     criterion = nn.CrossEntropyLoss(reduction='mean')
+    
     for iter in range(0, n_iters):
+        # random select a batch of data pairs
         train_pair = [random.choice(pairs) for i in range(batch_size)]
+        
         input_list = []
         target_list = []
+        
+        # translate word to index
         for input, target in train_pair:
             input_list.append(word2index(input))
             target_list.append(word2index(target))
@@ -205,10 +215,10 @@ def trainIters(encoder, decoder, n_iters=75000, print_every=1000, plot_every=100
                 plot_loss_avg = plot_loss_total / plot_every
                 plot_loss_total = 0
                 plot_losses.append(plot_loss_avg)
-            
+                
+                # save_model
                 if best_loss > plot_loss_avg:
                     best_loss = plot_loss_avg
-                    #save_model
                     torch.save(encoder.state_dict(), 'encoder.pth')
                     torch.save(decoder.state_dict(), 'decoder.pth')
                     
@@ -220,15 +230,18 @@ def trainIters(encoder, decoder, n_iters=75000, print_every=1000, plot_every=100
 def predict(encoder, decoder, input_tensor, target_tensor):
     with torch.no_grad():
         word = [word_table['SOS']]
+        
+        # initialize hidden state
         encoder_hidden = encoder.initHidden()
+        
         input_length = input_tensor.size(0)
         target_length = target_tensor.size(0)
         
         #----------sequence to sequence part for encoder----------#
         for di in range(input_length):
             encoder_output, encoder_hidden = encoder(input_tensor[di], encoder_hidden)
+            
         #----------sequence to sequence part for decoder----------#
-        
         decoder_input = torch.tensor([word_table['SOS']], device=device)
         decoder_hidden = encoder_hidden
         for di in range(1, target_length):
@@ -254,7 +267,7 @@ def test(encoder, decoder, new=False):
         word = word2index(word)
         pred = predict(encoder, decoder, torch.tensor(word, dtype=torch.long, device=device), torch.tensor(word2index(target), dtype=torch.long, device=device))
         score += compute_bleu(pred, target)
-        print('==================')
+        print('===================')
         print('input:  {}\ntarget: {}\npred:   {}'.format(index2word(word), target, pred))
         
     avg_score = score / len(test_pairs)
@@ -264,20 +277,22 @@ def test(encoder, decoder, new=False):
 encoder = EncoderRNN(vocab_size, hidden_size, batch_size).to(device)
 decoder = DecoderRNN(hidden_size, vocab_size, batch_size).to(device)
 
-"""
-load model
-"""
+#-----------------------test---------------------------#
+
+# load model
 encoder.load_state_dict(torch.load('encoder.pth'))
 decoder.load_state_dict(torch.load('decoder.pth'))
 
-test(encoder, decoder, True)
+test(encoder, decoder, False)
 
+#-----------------------train--------------------------#
 
-plot_losses, plot_bleu_score = trainIters(encoder, decoder, n_iters, print_every, plot_every, learning_rate, teacher_forcing_ratio, batch_size, milestones, gamma)
+# plot_losses, plot_bleu_score = trainIters(encoder, decoder, n_iters, print_every, plot_every, learning_rate, teacher_forcing_ratio, batch_size, milestones, gamma)
 
-loss_line, = plt.plot(range(1, n_iters+1, plot_every), plot_losses, label='loss')
-bleu4_line, = plt.plot(range(1, n_iters+1, plot_every), plot_bleu_score, label='bleu4-score')
+# # visualize 
+# loss_line, = plt.plot(range(1, n_iters+1, plot_every), plot_losses, label='loss')
+# bleu4_line, = plt.plot(range(1, n_iters+1, plot_every), plot_bleu_score, label='bleu4-score')
 
-plt.xlabel('iteration(s)')
-plt.legend(handles = [loss_line, bleu4_line], loc='upper left', fontsize='small')
-plt.savefig('curve.png')
+# plt.xlabel('iteration(s)')
+# plt.legend(handles = [loss_line, bleu4_line], loc='upper left', fontsize='small')
+# plt.savefig('curve.png')

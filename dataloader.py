@@ -18,9 +18,5 @@ def load(file_name):
             for i in data['input']:
                 pairs.append([i, data['target']])
         return pairs
-        
-if __name__ == '__main__':
-    data = load('train.json')
-    print(data)
   
     
